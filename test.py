@@ -43,17 +43,9 @@ def update_frame():
         # Convert the frame to HSV color space
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
 
-        # Get current positions of the trackbars
-        lh = cv2.getTrackbarPos("Lower H", "HSV Adjustments")
-        uh = cv2.getTrackbarPos("Upper H", "HSV Adjustments")
-        ls = cv2.getTrackbarPos("Lower S", "HSV Adjustments")
-        us = cv2.getTrackbarPos("Upper S", "HSV Adjustments")
-        lv = cv2.getTrackbarPos("Lower V", "HSV Adjustments")
-        uv = cv2.getTrackbarPos("Upper V", "HSV Adjustments")
-
-        # Define HSV range from trackbars
-        lower_green = np.array([lh, ls, lv])
-        upper_green = np.array([uh, us, uv])
+        # Define HSV range from predefined values
+        lower_green = np.array([50, 100, 100])
+        upper_green = np.array([70, 255, 255])
 
         # Threshold the HSV image to get only green colors
         mask = cv2.inRange(hsv, lower_green, upper_green)
@@ -117,6 +109,7 @@ def update_gui(centroids):
 
     frame_height = 480
     middle_y = frame_height // 2
+    dead_zone = 10  # Dead zone around the middle
 
     for (cX, cY) in centroids:
         if cX != 0 and cY != 0:
@@ -138,7 +131,8 @@ def update_gui(centroids):
         
         if abs(vertical_angle) > 30:
             info_canvas.create_text(150, 30, text="Angle > 30 degrees off vertical: YES", fill="red", font=("Helvetica", 14))
-            turn_rate = vertical_angle / 90  # Turn rate proportional to the angle
+            # Scale turn_rate such that 30 degrees is no turn and 180 degrees is full turn
+            turn_rate = (vertical_angle - 30) / 150
         else:
             info_canvas.create_text(150, 30, text="Angle > 30 degrees off vertical: NO", fill="green", font=("Helvetica", 14))
             turn_rate = 0  # Go straight
@@ -162,13 +156,15 @@ def update_gui(centroids):
         info_canvas.create_rectangle(130, top_line, 170, bottom_line, outline="black")
         info_canvas.create_line(130, box_middle, 170, box_middle, fill="black")
 
-        if vertical_position > 0:
+        if vertical_position > dead_zone:
             info_canvas.create_rectangle(130, box_middle, 170, box_middle + vertical_position, fill="blue")
-        else:
+        elif vertical_position < -dead_zone:
             info_canvas.create_rectangle(130, box_middle + vertical_position, 170, box_middle, fill="blue")
+        else:
+            vertical_position = 0  # Within dead zone
 
         # Set velocity based on vertical position
-        velocity = vertical_position / 100  # Scale velocity down
+        velocity = vertical_position / 200  # Scale velocity down further
     else:
         velocity = 0
 
@@ -184,15 +180,24 @@ def update_simulation():
     robot_angle += turn_rate
 
     # Constrain robot's position within the simulation window
-    robot_x = max(20, min(robot_x, 280))
-    robot_y = max(20, min(robot_y, 280))
+    robot_x = max(40, min(robot_x, 260))
+    robot_y = max(40, min(robot_y, 260))
+
+    # Draw the walls
+    sim_canvas.create_rectangle(0, 0, 300, 300, outline="black", width=2)
 
     # Draw the robot
     robot_size = 20
     wheel_size = 5
 
+    # Draw the robot's body
     sim_canvas.create_rectangle(robot_x - robot_size, robot_y - robot_size, robot_x + robot_size, robot_y + robot_size, fill="gray")
-    
+
+    # Draw the robot's front indicator
+    front_x = robot_x + robot_size * math.cos(math.radians(robot_angle))
+    front_y = robot_y + robot_size * math.sin(math.radians(robot_angle))
+    sim_canvas.create_line(robot_x, robot_y, front_x, front_y, fill="red", width=2)
+
     # Calculate wheel positions based on robot angle
     left_wheel_x = robot_x + robot_size * math.cos(math.radians(robot_angle + 90))
     left_wheel_y = robot_y + robot_size * math.sin(math.radians(robot_angle + 90))
@@ -222,16 +227,6 @@ sim_window = tk.Toplevel(root)
 sim_window.title("Robot Simulation")
 sim_canvas = Canvas(sim_window, width=300, height=300)
 sim_canvas.pack()
-
-# Create trackbars for adjusting HSV ranges in a separate window
-cv2.namedWindow("HSV Adjustments")
-cv2.resizeWindow("HSV Adjustments", 600, 300)
-cv2.createTrackbar("Lower H", "HSV Adjustments", 50, 179, nothing)
-cv2.createTrackbar("Upper H", "HSV Adjustments", 70, 179, nothing)
-cv2.createTrackbar("Lower S", "HSV Adjustments", 100, 255, nothing)
-cv2.createTrackbar("Upper S", "HSV Adjustments", 255, 255, nothing)
-cv2.createTrackbar("Lower V", "HSV Adjustments", 100, 255, nothing)
-cv2.createTrackbar("Upper V", "HSV Adjustments", 255, 255, nothing)
 
 def on_closing():
     stop_event.set()
