@@ -1,6 +1,8 @@
 import cv2
 import mediapipe as mp
 import numpy as np
+import math
+import time
 
 # Initialize MediaPipe Hands with detailed configuration.
 mp_hands = mp.solutions.hands
@@ -25,9 +27,24 @@ left_wheel_velocity = 0
 right_wheel_velocity = 0
 max_wheel_velocity = 10
 robot_angle = 0
+dead_zone_height = 50
 
 # Create a blank image for the robot simulation
 robot_simulation = np.zeros((box_size, box_size, 3), dtype=np.uint8)
+
+def draw_velocity_bar(image, velocity, max_velocity, position, color):
+    bar_height = 100
+    bar_width = 20
+    max_bar_height = bar_height // 2
+    normalized_velocity = int((velocity / max_velocity) * max_bar_height)
+    cv2.rectangle(image, (position[0], position[1] - max_bar_height), (position[0] + bar_width, position[1] + max_bar_height), (255, 255, 255), 2)
+    if velocity >= 0:
+        cv2.rectangle(image, (position[0], position[1]), (position[0] + bar_width, position[1] - normalized_velocity), color, -1)
+    else:
+        cv2.rectangle(image, (position[0], position[1]), (position[0] + bar_width, position[1] - normalized_velocity), color, -1)
+
+# Initialize FPS calculation
+prev_time = time.time()
 
 while cap.isOpened():
     success, image = cap.read()
@@ -40,35 +57,76 @@ while cap.isOpened():
     image.flags.writeable = False
     results = hands.process(image)
 
+    # Calculate FPS
+    current_time = time.time()
+    fps = 1 / (current_time - prev_time)
+    prev_time = current_time
+
     # Draw the hand annotations on the image.
     image.flags.writeable = True
     image_height, image_width, _ = image.shape
+    middle_y = image_height // 2
+    dead_zone_top = middle_y - dead_zone_height // 2
+    dead_zone_bottom = middle_y + dead_zone_height // 2
     image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
 
-    left_hand_y = None
-    right_hand_y = None
+    # Draw horizontal line in the middle of the image
+    cv2.line(image, (0, middle_y), (image_width, middle_y), (255, 255, 255), 2)
+    # Draw dead zone
+    cv2.rectangle(image, (0, dead_zone_top), (image_width, dead_zone_bottom), (255, 255, 255), 2)
+
+    left_finger_y = None
+    right_finger_y = None
+    left_finger_x = None
+    right_finger_x = None
 
     if results.multi_hand_landmarks:
         for hand_landmarks in results.multi_hand_landmarks:
-            mp_drawing.draw_landmarks(
-                image, hand_landmarks, mp_hands.HAND_CONNECTIONS)
-
-            # Get the hand label (Left/Right)
             hand_label = results.multi_handedness[results.multi_hand_landmarks.index(hand_landmarks)].classification[0].label
+            pointer_finger_tip = hand_landmarks.landmark[mp_hands.HandLandmark.INDEX_FINGER_TIP]
+            thumb_tip = hand_landmarks.landmark[mp_hands.HandLandmark.THUMB_TIP]
 
-            # Get the y-coordinate of the wrist (landmark 0)
-            wrist_y = hand_landmarks.landmark[mp_hands.HandLandmark.WRIST].y * image_height
+            # Draw all landmarks as white circles
+            for landmark in hand_landmarks.landmark:
+                x = int(landmark.x * image_width)
+                y = int(landmark.y * image_height)
+                cv2.circle(image, (x, y), 5, (255, 255, 255), -1)
 
+            # Draw pointer finger tip as a larger red circle
+            pointer_finger_x = int(pointer_finger_tip.x * image_width)
+            pointer_finger_y = int(pointer_finger_tip.y * image_height)
+            cv2.circle(image, (pointer_finger_x, pointer_finger_y), 10, (0, 0, 255), -1)
+            cv2.putText(image, f'({pointer_finger_x}, {pointer_finger_y})', (pointer_finger_x, pointer_finger_y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1, cv2.LINE_AA)
+
+            # Draw thumb tip as a larger white circle
+            thumb_x = int(thumb_tip.x * image_width)
+            thumb_y = int(thumb_tip.y * image_height)
+            cv2.circle(image, (thumb_x, thumb_y), 5, (255, 255, 255), -1)
+
+            # Get the y-coordinate of the pointer finger tip
             if hand_label == 'Left':
-                left_hand_y = wrist_y
+                left_finger_y = pointer_finger_y
+                left_finger_x = pointer_finger_x
             elif hand_label == 'Right':
-                right_hand_y = wrist_y
+                right_finger_y = pointer_finger_y
+                right_finger_x = pointer_finger_x
 
-    # Update wheel velocities based on hand positions
-    if left_hand_y is not None:
-        left_wheel_velocity = max_wheel_velocity * (1 - left_hand_y / image_height)
-    if right_hand_y is not None:
-        right_wheel_velocity = max_wheel_velocity * (1 - right_hand_y / image_height)
+    # Update wheel velocities based on swapped hand positions and dead zone
+    if left_finger_y is not None:
+        if dead_zone_top < left_finger_y < dead_zone_bottom:
+            right_wheel_velocity = 0
+        else:
+            right_wheel_velocity = max_wheel_velocity * (middle_y - left_finger_y) / middle_y
+    else:
+        right_wheel_velocity = 0
+
+    if right_finger_y is not None:
+        if dead_zone_top < right_finger_y < dead_zone_bottom:
+            left_wheel_velocity = 0
+        else:
+            left_wheel_velocity = max_wheel_velocity * (middle_y - right_finger_y) / middle_y
+    else:
+        left_wheel_velocity = 0
 
     # Update robot position and orientation
     velocity = (left_wheel_velocity + right_wheel_velocity) / 2
@@ -106,9 +164,30 @@ while cap.isOpened():
     cv2.circle(robot_simulation, front_left_wheel, 5, (0, 255, 0), -1)
     cv2.circle(robot_simulation, front_right_wheel, 5, (0, 255, 0), -1)
 
+    # Label the wheels with 'L' and 'R'
+    cv2.putText(robot_simulation, 'R', (front_left_wheel[0] - 10, front_left_wheel[1] - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1, cv2.LINE_AA)
+    cv2.putText(robot_simulation, 'L', (front_right_wheel[0] - 10, front_right_wheel[1] - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1, cv2.LINE_AA)
+
     # Draw the front direction
     front_point = (int(robot_pos[0] + front_dx), int(robot_pos[1] + front_dy))
     cv2.line(robot_simulation, (robot_pos[0], robot_pos[1]), front_point, (0, 0, 255), 2)
+
+    # Draw velocity bars
+    draw_velocity_bar(robot_simulation, left_wheel_velocity, max_wheel_velocity, (box_size - 60, 50), (0, 255, 0))
+    draw_velocity_bar(robot_simulation, right_wheel_velocity, max_wheel_velocity, (box_size - 30, 50), (0, 255, 0))
+
+    # Draw line between pointer fingers and the angle
+    if left_finger_x is not None and right_finger_x is not None:
+        cv2.line(image, (left_finger_x, left_finger_y), (right_finger_x, right_finger_y), (0, 255, 0), 2)
+        angle = math.degrees(math.atan2(right_finger_y - left_finger_y, right_finger_x - left_finger_x))
+        angle_text = f'Angle: {angle:.2f} degrees'
+        midpoint_x = (left_finger_x + right_finger_x) // 2
+        midpoint_y = (left_finger_y + right_finger_y) // 2
+        cv2.putText(image, angle_text, (midpoint_x, midpoint_y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1, cv2.LINE_AA)
+
+    # Display FPS on the images
+    cv2.putText(image, f'FPS: {fps:.2f}', (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2, cv2.LINE_AA)
+    cv2.putText(robot_simulation, f'FPS: {fps:.2f}', (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2, cv2.LINE_AA)
 
     # Display the resulting images
     cv2.imshow('MediaPipe Hands', image)
