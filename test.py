@@ -1,6 +1,5 @@
 import cv2
 import numpy as np
-import time
 import tkinter as tk
 from tkinter import Canvas
 from PIL import Image, ImageTk
@@ -8,22 +7,27 @@ import threading
 import math
 from collections import deque
 
-# Initialize the HSV lower and upper bounds
+# Initialize the HSV lower and upper bounds for green and orange
 lower_green = np.array([50, 100, 100])
 upper_green = np.array([70, 255, 255])
+
+lower_orange = np.array([10, 100, 100])
+upper_orange = np.array([25, 255, 255])
+
 min_contour_area = 500  # Minimum contour area to consider
 buffer_size = 10  # Size of the moving average buffer
 
 # Initialize buffers for moving average of centroids
-centroid_buffer = deque(maxlen=buffer_size)
+green_centroid_buffer = deque(maxlen=buffer_size)
+orange_centroid_buffer = deque(maxlen=buffer_size)
 
 def nothing(x):
     pass
 
 # Initialize the camera
 cap = cv2.VideoCapture(0)
-cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+cap.set(cv2.CAP_PROP_FRAME_WIDTH, 320)  # Reduce frame size for faster processing
+cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 240)
 cap.set(cv2.CAP_PROP_EXPOSURE, 40)
 
 stop_event = threading.Event()
@@ -43,51 +47,70 @@ def update_frame():
         # Convert the frame to HSV color space
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
 
-        # Define HSV range from predefined values
-        lower_green = np.array([50, 100, 100])
-        upper_green = np.array([70, 255, 255])
-
-        # Threshold the HSV image to get only green colors
-        mask = cv2.inRange(hsv, lower_green, upper_green)
+        # Threshold the HSV image to get only green and orange colors
+        green_mask = cv2.inRange(hsv, lower_green, upper_green)
+        orange_mask = cv2.inRange(hsv, lower_orange, upper_orange)
         
-        # Apply Gaussian blur to the mask
-        mask = cv2.GaussianBlur(mask, (5, 5), 0)
-        
-        # Apply morphological operations
-        mask = cv2.dilate(mask, None, iterations=2)
-        mask = cv2.erode(mask, None, iterations=2)
+        # Apply Gaussian blur and morphological operations in a single step
+        green_mask = cv2.morphologyEx(cv2.GaussianBlur(green_mask, (5, 5), 0), cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
+        orange_mask = cv2.morphologyEx(cv2.GaussianBlur(orange_mask, (5, 5), 0), cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
 
         # Find contours in the mask
-        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        green_contours, _ = cv2.findContours(green_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        orange_contours, _ = cv2.findContours(orange_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
-        centroids = []
-        # Filter contours by area and get up to two largest ones
-        valid_contours = [c for c in contours if cv2.contourArea(c) > min_contour_area]
-        valid_contours = sorted(valid_contours, key=cv2.contourArea, reverse=True)[:2]
-        
-        for contour in valid_contours:
-            # Calculate the centroid of each contour
-            M = cv2.moments(contour)
+        green_centroids = []
+        orange_centroids = []
+
+        # Filter green contours by area and get the largest one
+        valid_green_contours = [c for c in green_contours if cv2.contourArea(c) > min_contour_area]
+        if valid_green_contours:
+            green_contour = max(valid_green_contours, key=cv2.contourArea)
+            M = cv2.moments(green_contour)
             if M["m00"] != 0:
                 cX = int(M["m10"] / M["m00"])
                 cY = int(M["m01"] / M["m00"])
-                centroids.append((cX, cY))
+                green_centroids.append((cX, cY))
         
-        # Pad centroids to ensure a fixed length list
-        while len(centroids) < 2:
-            centroids.append((0, 0))
-
+        # Filter orange contours by area and get the largest one
+        valid_orange_contours = [c for c in orange_contours if cv2.contourArea(c) > min_contour_area]
+        if valid_orange_contours:
+            orange_contour = max(valid_orange_contours, key=cv2.contourArea)
+            M = cv2.moments(orange_contour)
+            if M["m00"] != 0:
+                cX = int(M["m10"] / M["m00"])
+                cY = int(M["m01"] / M["m00"])
+                orange_centroids.append((cX, cY))
+        
         # Smooth the centroids using moving average
-        if centroids:
-            centroid_buffer.append(centroids)
-            valid_centroids = [c for c in centroid_buffer if c != [(0, 0), (0, 0)]]
-            if valid_centroids:
-                avg_centroids = np.mean(valid_centroids, axis=0).astype(int)
-                centroids = [(int(c[0]), int(c[1])) for c in avg_centroids]
+        if green_centroids:
+            green_centroid_buffer.append(green_centroids[0])
+            avg_green_centroid = np.mean(green_centroid_buffer, axis=0).astype(int)
+            green_centroids = [(int(avg_green_centroid[0]), int(avg_green_centroid[1]))]
+        
+        if orange_centroids:
+            orange_centroid_buffer.append(orange_centroids[0])
+            avg_orange_centroid = np.mean(orange_centroid_buffer, axis=0).astype(int)
+            orange_centroids = [(int(avg_orange_centroid[0]), int(avg_orange_centroid[1]))]
         
         # Update the GUI with the detected coordinates
-        if centroids:
-            root.after(0, update_gui, centroids)
+        if green_centroids and orange_centroids:
+            root.after(0, update_gui, green_centroids[0], orange_centroids[0])
+
+        # Draw the center line and dead zone
+        center_line_color = (255, 0, 0)  # Blue
+        dead_zone_color = (0, 255, 0)  # Green
+        middle_y = frame.shape[0] // 2
+        dead_zone_size = 10
+        top_dead_zone = middle_y - dead_zone_size
+        bottom_dead_zone = middle_y + dead_zone_size
+
+        # Draw the center line
+        cv2.line(frame, (0, middle_y), (frame.shape[1], middle_y), center_line_color, 1)
+
+        # Draw the dead zone
+        cv2.line(frame, (0, top_dead_zone), (frame.shape[1], top_dead_zone), dead_zone_color, 1)
+        cv2.line(frame, (0, bottom_dead_zone), (frame.shape[1], bottom_dead_zone), dead_zone_color, 1)
 
         # Convert the frame to ImageTk format
         img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -99,7 +122,7 @@ def update_frame():
         canvas.imgtk = imgtk
 
 # Function to update the GUI with the detected coordinates
-def update_gui(centroids):
+def update_gui(green_centroid, orange_centroid):
     global velocity, turn_rate
 
     canvas.delete("circles")
@@ -107,19 +130,24 @@ def update_gui(centroids):
     info_canvas.delete("all")
     sim_canvas.delete("all")
 
-    frame_height = 480
+    frame_height = 240
     middle_y = frame_height // 2
     dead_zone = 10  # Dead zone around the middle
 
-    for (cX, cY) in centroids:
+    if green_centroid:
+        cX, cY = green_centroid
         if cX != 0 and cY != 0:
-            canvas.create_oval(cX-10, cY-10, cX+10, cY+10, fill="red", tags="circles")
+            canvas.create_oval(cX-5, cY-5, cX+5, cY+5, fill="green", tags="circles")
     
-    # If two objects are detected, draw a vector and calculate the angle
-    if len(centroids) == 2 and all(cX != 0 and cY != 0 for cX, cY in centroids):
-        # Sort centroids by y-coordinate
-        centroids.sort(key=lambda x: x[1])
-        (cX1, cY1), (cX2, cY2) = centroids
+    if orange_centroid:
+        cX, cY = orange_centroid
+        if cX != 0 and cY != 0:
+            canvas.create_oval(cX-5, cY-5, cX+5, cY+5, fill="orange", tags="circles")
+    
+    # Draw a vector and calculate the angle
+    if green_centroid and orange_centroid:
+        (cX1, cY1) = orange_centroid
+        (cX2, cY2) = green_centroid
         canvas.create_line(cX1, cY1, cX2, cY2, fill="blue", width=2, tags="vector")
 
         # Calculate the angle with the vertical axis
@@ -130,21 +158,22 @@ def update_gui(centroids):
         print(f"Angle with the vertical axis: {vertical_angle:.2f} degrees")
         
         if abs(vertical_angle) > 30:
-            info_canvas.create_text(150, 30, text="Angle > 30 degrees off vertical: YES", fill="red", font=("Helvetica", 14))
+            info_canvas.create_text(150, 30, text="Angle > 30 degrees off vertical: YES", fill="red", font=("Helvetica", 12))
             # Scale turn_rate such that 30 degrees is no turn and 180 degrees is full turn
             turn_rate = (vertical_angle - 30) / 150
         else:
-            info_canvas.create_text(150, 30, text="Angle > 30 degrees off vertical: NO", fill="green", font=("Helvetica", 14))
+            info_canvas.create_text(150, 30, text="Angle > 30 degrees off vertical: NO", fill="green", font=("Helvetica", 12))
             turn_rate = 0  # Go straight
     else:
-        info_canvas.create_text(150, 30, text="Angle data unavailable", fill="grey", font=("Helvetica", 14))
+        info_canvas.create_text(150, 30, text="Angle data unavailable", fill="grey", font=("Helvetica", 12))
         turn_rate = 0
 
     # Update the vertical position of the top object
-    if centroids and centroids[0][0] != 0:
-        top_cY = centroids[0][1]
+    if orange_centroid:
+        top_cY = orange_centroid[1]
         vertical_position = top_cY - middle_y
-        info_canvas.create_text(150, 70, text=f"Vertical Position: {vertical_position}", fill="blue", font=("Helvetica", 14))
+        print(f"Vertical position (orange centroid): {top_cY} (relative to middle: {vertical_position})")
+        info_canvas.create_text(150, 60, text=f"Vertical Position: {vertical_position}", fill="blue", font=("Helvetica", 12))
         
         # Draw the vertical position indicator
         box_middle = 75  # Center of the box
@@ -164,7 +193,7 @@ def update_gui(centroids):
             vertical_position = 0  # Within dead zone
 
         # Set velocity based on vertical position
-        velocity = vertical_position / 200  # Scale velocity down further
+        velocity = vertical_position / 400  # Scale velocity down further
     else:
         velocity = 0
 
@@ -213,7 +242,7 @@ def update_simulation():
 # Create a Tkinter window for the GUI
 root = tk.Tk()
 root.title("Object Detection GUI")
-canvas = Canvas(root, width=640, height=480)
+canvas = Canvas(root, width=320, height=240)
 canvas.pack()
 
 # Create a separate Tkinter window for displaying the vertical position and angle status
