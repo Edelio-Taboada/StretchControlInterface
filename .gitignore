@@ -6,6 +6,7 @@
 # Prerequisites
 *.d
 .json
+.vscode
 
 # Compiled Object files
 *.slo
@@ -24,7 +25,7 @@
 
 # Fortran module files
 *.mod
-*.smod
+*.smodu
 
 # Compiled Static libraries
 *.lai
